@@ -195,16 +195,24 @@ export default function CRM(){
   const computeDeductions=(order)=>{
     const deductions=[];
     for(const item of order.items){
-      const fgs=finishedGoods.filter(fg=>fg.productId===item.productId);
-      if(!fgs.length)return{ok:false,errorMsg:`${getProd(item.productId)?.name}: hazır koli yok`};
-      let rem=item.qty;
-      for(const fg of fgs){
-        if(rem<=0)break;
-        const need=Math.ceil(rem/fg.piecesPerKoli);
-        const act=Math.min(need,fg.stock);
-        if(act>0){deductions.push({fgId:fg.id,qty:act});rem-=act*fg.piecesPerKoli;}
+      if(item.finishedGoodId){
+        const fg=finishedGoods.find(f=>f.id===item.finishedGoodId);
+        if(!fg)return{ok:false,errorMsg:"Koli bulunamadı"};
+        const already=deductions.filter(d=>d.fgId===fg.id).reduce((s,d)=>s+d.qty,0);
+        if(fg.stock-already<item.qty)return{ok:false,errorMsg:`${fg.name}: yeterli stok yok`};
+        deductions.push({fgId:fg.id,qty:item.qty});
+      }else{
+        const fgs=finishedGoods.filter(fg=>fg.productId===item.productId);
+        if(!fgs.length)return{ok:false,errorMsg:`${getProd(item.productId)?.name}: hazır koli yok`};
+        let rem=item.qty;
+        for(const fg of fgs){
+          if(rem<=0)break;
+          const need=Math.ceil(rem/fg.piecesPerKoli);
+          const act=Math.min(need,fg.stock);
+          if(act>0){deductions.push({fgId:fg.id,qty:act});rem-=act*fg.piecesPerKoli;}
+        }
+        if(rem>0)return{ok:false,errorMsg:`${getProd(item.productId)?.name}: yeterli koli stoku yok`};
       }
-      if(rem>0)return{ok:false,errorMsg:`${getProd(item.productId)?.name}: yeterli koli stoku yok`};
     }
     return{ok:true,deductions};
   };
@@ -346,7 +354,7 @@ export default function CRM(){
       {modal&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.55)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}} onClick={closeM}>
         <div style={{background:T.surface,borderRadius:14,border:`1px solid ${T.border}`,padding:26,maxWidth:660,width:"92%",maxHeight:"88vh",overflowY:"auto",animation:"scaleIn .2s"}} onClick={e=>e.stopPropagation()}>
           {modal.type==="customer"&&<CustForm data={modal.data} onSave={saveCust} onClose={closeM}/>}
-          {modal.type==="order"&&<OrderForm data={modal.data} customers={customers} getCustPrice={getCustPrice} onSave={saveOrder} onClose={closeM}/>}
+          {modal.type==="order"&&<OrderForm data={modal.data} customers={customers} finishedGoods={finishedGoods} getCustPrice={getCustPrice} onSave={saveOrder} onClose={closeM}/>}
           {modal.type==="payment"&&<PayForm data={modal.data} customers={customers} onSave={savePay} onClose={closeM}/>}
           {modal.type==="material"&&<MatForm data={modal.data} onSave={saveMat} onClose={closeM}/>}
           {modal.type==="addstock"&&<AddStockF mat={modal.data} onAdd={addStock} onClose={closeM}/>}
@@ -450,7 +458,7 @@ function CustP({customers,openM,delCust,getCustPrice}){
 }
 
 /* ━━━ ORDERS ━━━ */
-function OrderP({orders,getCust,getProd,orderSub,orderKDV,openM,deductFG,delOrder}){
+function OrderP({orders,getCust,getProd,orderSub,orderKDV,openM,deductFG,delOrder,finishedGoods}){
   const [filter,setFilter]=useState("all");
   const sorted=[...(filter==="all"?orders:orders.filter(o=>o.status===filter))].sort((a,b)=>b.date.localeCompare(a.date));
   return <div style={{animation:"fadeIn .4s"}}>
@@ -472,7 +480,7 @@ function OrderP({orders,getCust,getProd,orderSub,orderKDV,openM,deductFG,delOrde
               {o.faturali&&<Bdg text={`KDV %${o.kdvRate||20}`} color={T.purple}/>}
             </div>
             <div style={{fontSize:11,color:T.textMuted}}>{fmtD(o.date)}{o.dueDate&&` · Vade: ${fmtD(o.dueDate)}`}{o.note&&` · ${o.note}`}</div>
-            <div style={{marginTop:7,display:"flex",flexWrap:"wrap",gap:4}}>{o.items.map((item,j)=><span key={j} style={{padding:"3px 8px",borderRadius:5,fontSize:11,background:T.surface,border:`1px solid ${T.border}`}}>{getProd(item.productId)?.name}: {fmtN(item.qty)} × {fmt(item.unitPrice)}</span>)}</div>
+            <div style={{marginTop:7,display:"flex",flexWrap:"wrap",gap:4}}>{o.items.map((item,j)=>{const fg=item.finishedGoodId?finishedGoods.find(f=>f.id===item.finishedGoodId):null;const label=fg?fg.name:(getProd(item.productId)?.name||"?");const unit=item.finishedGoodId?"koli":"adet";return <span key={j} style={{padding:"3px 8px",borderRadius:5,fontSize:11,background:T.surface,border:`1px solid ${T.border}`}}>{label}: {fmtN(item.qty)} {unit} × {fmt(item.unitPrice)}</span>;})}</div>
           </div>
           <div style={{textAlign:"right",display:"flex",flexDirection:"column",alignItems:"flex-end",gap:5}}>
             {o.faturali&&sub!==tot&&<div style={{fontSize:11,color:T.textDim}}>Ara toplam: {fmt(sub)}</div>}
@@ -666,11 +674,19 @@ function CustForm({data,onSave,onClose}){
   </div>;
 }
 
-function OrderForm({data,customers,getCustPrice,onSave,onClose}){
-  const [f,sF]=useState(data||{customerId:customers[0]?.id||"",date:new Date().toISOString().slice(0,10),status:"beklemede",items:[{productId:DEF_PRODUCTS[0]?.id||"",qty:1,unitPrice:0}],paymentType:"pesin",dueDate:"",note:"",faturali:false,kdvRate:20});
+function OrderForm({data,customers,finishedGoods,getCustPrice,onSave,onClose}){
+  const getKoliPrice=(cid,fgId)=>{const fg=finishedGoods.find(f=>f.id===fgId);if(!fg)return 0;return getCustPrice(cid,fg.productId)*fg.piecesPerKoli;};
+  const migrateItems=(items,cid)=>items.map(item=>{
+    if(item.finishedGoodId)return item;
+    const fg=finishedGoods.find(f=>f.productId===item.productId);
+    if(!fg)return{finishedGoodId:finishedGoods[0]?.id||"",qty:1,unitPrice:getKoliPrice(cid,finishedGoods[0]?.id)};
+    return{finishedGoodId:fg.id,qty:Math.max(1,Math.ceil((Number(item.qty)||0)/fg.piecesPerKoli)),unitPrice:Number(item.unitPrice)||getKoliPrice(cid,fg.id)};
+  });
+  const initCid=data?.customerId||customers[0]?.id||"";
+  const [f,sF]=useState(data?{...data,items:migrateItems(data.items||[],initCid)}:{customerId:initCid,date:new Date().toISOString().slice(0,10),status:"beklemede",items:[{finishedGoodId:finishedGoods[0]?.id||"",qty:1,unitPrice:getKoliPrice(initCid,finishedGoods[0]?.id)}],paymentType:"pesin",dueDate:"",note:"",faturali:false,kdvRate:20});
   const set=(k,v)=>sF({...f,[k]:v});
-  const setI=(idx,k,v)=>{const items=[...f.items];items[idx]={...items[idx],[k]:(k==="qty"||k==="unitPrice")?(v===""?"":Number(v)):v};if(k==="productId")items[idx].unitPrice=getCustPrice(f.customerId,v);set("items",items);};
-  const handleCust=cid=>{const items=f.items.map(item=>({...item,unitPrice:getCustPrice(cid,item.productId)}));sF({...f,customerId:cid,items});};
+  const setI=(idx,k,v)=>{const items=[...f.items];items[idx]={...items[idx],[k]:(k==="qty"||k==="unitPrice")?(v===""?"":Number(v)):v};if(k==="finishedGoodId")items[idx].unitPrice=getKoliPrice(f.customerId,v);set("items",items);};
+  const handleCust=cid=>{const items=f.items.map(item=>({...item,unitPrice:getKoliPrice(cid,item.finishedGoodId)}));sF({...f,customerId:cid,items});};
   const sub=f.items.reduce((s,i)=>s+(Number(i.qty)||0)*(Number(i.unitPrice)||0),0);
   const kdv=f.faturali?sub*((Number(f.kdvRate)||20)/100):0;
   const valid=f.customerId&&f.items.length>0&&f.items.every(i=>Number(i.qty)>0);
@@ -689,11 +705,11 @@ function OrderForm({data,customers,getCustPrice,onSave,onClose}){
       {f.faturali&&<FF label="KDV %"><input type="number" value={f.kdvRate??""} onChange={e=>set("kdvRate",e.target.value===""?"":Number(e.target.value))} style={{width:"100%"}}/></FF>}
     </div>
     <div style={{marginBottom:12}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:7}}><span style={{fontSize:11,fontWeight:600,color:T.textMuted,textTransform:"uppercase",letterSpacing:"1px"}}>Ürünler</span><button onClick={()=>set("items",[...f.items,{productId:DEF_PRODUCTS[0]?.id||"",qty:1,unitPrice:0}])} style={{background:"transparent",border:`1px solid ${T.border}`,borderRadius:6,padding:"3px 9px",color:T.accent,cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif"}}>+ Ekle</button></div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:7}}><span style={{fontSize:11,fontWeight:600,color:T.textMuted,textTransform:"uppercase",letterSpacing:"1px"}}>Koliler</span><button onClick={()=>{const fgId=finishedGoods[0]?.id||"";set("items",[...f.items,{finishedGoodId:fgId,qty:1,unitPrice:getKoliPrice(f.customerId,fgId)}]);}} style={{background:"transparent",border:`1px solid ${T.border}`,borderRadius:6,padding:"3px 9px",color:T.accent,cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif"}}>+ Ekle</button></div>
       {f.items.map((item,idx)=><div key={idx} style={{display:"flex",gap:5,alignItems:"flex-end",marginBottom:5}}>
-        <div style={{flex:2}}>{idx===0&&<label style={{fontSize:10,color:T.textDim,display:"block",marginBottom:2}}>Ürün</label>}<select value={item.productId} onChange={e=>setI(idx,"productId",e.target.value)} style={{width:"100%"}}>{DEF_PRODUCTS.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
-        <div style={{flex:1}}>{idx===0&&<label style={{fontSize:10,color:T.textDim,display:"block",marginBottom:2}}>Adet</label>}<input type="number" min={1} value={item.qty} onChange={e=>setI(idx,"qty",e.target.value)} style={{width:"100%"}}/></div>
-        <div style={{flex:1}}>{idx===0&&<label style={{fontSize:10,color:T.textDim,display:"block",marginBottom:2}}>Fiyat</label>}<input type="number" value={item.unitPrice} onChange={e=>setI(idx,"unitPrice",e.target.value)} style={{width:"100%"}}/></div>
+        <div style={{flex:2}}>{idx===0&&<label style={{fontSize:10,color:T.textDim,display:"block",marginBottom:2}}>Koli</label>}<select value={item.finishedGoodId||""} onChange={e=>setI(idx,"finishedGoodId",e.target.value)} style={{width:"100%"}}>{finishedGoods.map(fg=><option key={fg.id} value={fg.id}>{fg.name}</option>)}</select></div>
+        <div style={{flex:1}}>{idx===0&&<label style={{fontSize:10,color:T.textDim,display:"block",marginBottom:2}}>Koli Adedi</label>}<input type="number" min={1} value={item.qty} onChange={e=>setI(idx,"qty",e.target.value)} style={{width:"100%"}}/></div>
+        <div style={{flex:1}}>{idx===0&&<label style={{fontSize:10,color:T.textDim,display:"block",marginBottom:2}}>Koli Fiyatı</label>}<input type="number" value={item.unitPrice} onChange={e=>setI(idx,"unitPrice",e.target.value)} style={{width:"100%"}}/></div>
         <div style={{flex:1,textAlign:"right"}}>{idx===0&&<label style={{fontSize:10,color:T.textDim,display:"block",marginBottom:2}}>Tutar</label>}<div style={{padding:"9px 0",fontSize:12,fontWeight:600,color:T.accent}}>{fmt((Number(item.qty)||0)*(Number(item.unitPrice)||0))}</div></div>
         {f.items.length>1&&<button onClick={()=>set("items",f.items.filter((_,i)=>i!==idx))} style={{background:"transparent",border:"none",cursor:"pointer",color:T.danger,padding:"9px 2px"}}>{IC.trash}</button>}
       </div>)}
