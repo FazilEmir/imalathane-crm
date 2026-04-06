@@ -192,29 +192,70 @@ export default function CRM(){
   const saveCust=(c)=>{if(c.id)setCustomers(p=>p.map(x=>x.id===c.id?c:x));else setCustomers(p=>[...p,{...c,id:"c"+gid()}]);closeM();showToast("Müşteri kaydedildi");};
   const delCust=(id)=>{setCustomers(p=>p.filter(c=>c.id!==id));showToast("Müşteri silindi");};
 
-  const saveOrder=(o)=>{if(o.id)setOrders(p=>p.map(x=>x.id===o.id?o:x));else setOrders(p=>[...p,{...o,id:"s"+gid()}]);closeM();showToast("Sipariş kaydedildi");};
+  const computeDeductions=(order)=>{
+    const deductions=[];
+    for(const item of order.items){
+      const fgs=finishedGoods.filter(fg=>fg.productId===item.productId);
+      if(!fgs.length)return{ok:false,errorMsg:`${getProd(item.productId)?.name}: hazır koli yok`};
+      let rem=item.qty;
+      for(const fg of fgs){
+        if(rem<=0)break;
+        const need=Math.ceil(rem/fg.piecesPerKoli);
+        const act=Math.min(need,fg.stock);
+        if(act>0){deductions.push({fgId:fg.id,qty:act});rem-=act*fg.piecesPerKoli;}
+      }
+      if(rem>0)return{ok:false,errorMsg:`${getProd(item.productId)?.name}: yeterli koli stoku yok`};
+    }
+    return{ok:true,deductions};
+  };
+  const applyDeductions=(deductions)=>{
+    setFinishedGoods(prev=>prev.map(fg=>{const d=deductions.find(x=>x.fgId===fg.id);return d?{...fg,stock:fg.stock-d.qty}:fg;}));
+  };
+
+  const saveOrder=(o)=>{
+    const existing=o.id?orders.find(x=>x.id===o.id):null;
+    let toSave={
+      ...o,
+      kdvRate:Number(o.kdvRate)||20,
+      items:o.items.map(i=>({...i,qty:Number(i.qty)||0,unitPrice:Number(i.unitPrice)||0})),
+    };
+    let deductionsToApply=null;
+    let message="Sipariş kaydedildi";
+    let type="success";
+    if(toSave.status==="teslim"&&!existing?.stockDeducted&&!toSave.stockDeducted){
+      const result=computeDeductions(toSave);
+      if(result.ok){
+        deductionsToApply=result.deductions;
+        toSave.stockDeducted=true;
+        message="Sipariş kaydedildi ve koliler stoktan düşüldü";
+      }else{
+        message=`Kaydedildi ama stok düşülemedi: ${result.errorMsg}`;
+        type="error";
+      }
+    }
+    if(toSave.id)setOrders(p=>p.map(x=>x.id===toSave.id?toSave:x));
+    else setOrders(p=>[...p,{...toSave,id:"s"+gid()}]);
+    if(deductionsToApply)applyDeductions(deductionsToApply);
+    closeM();
+    showToast(message,type);
+  };
   const delOrder=(id)=>{setOrders(p=>p.filter(o=>o.id!==id));showToast("Sipariş silindi");};
 
   const deductFG=(orderId)=>{
-    const order=orders.find(o=>o.id===orderId);if(!order)return;
-    let deductions=[];let ok=true;
-    for(const item of order.items){
-      const fgs=finishedGoods.filter(fg=>fg.productId===item.productId);
-      if(!fgs.length){showToast(`${getProd(item.productId)?.name}: hazır koli yok`,"error");return;}
-      let rem=item.qty;
-      for(const fg of fgs){
-        if(rem<=0)break;const need=Math.ceil(rem/fg.piecesPerKoli);const act=Math.min(need,fg.stock);
-        if(act>0){deductions.push({fgId:fg.id,qty:act});rem-=act*fg.piecesPerKoli;}
-      }
-      if(rem>0){showToast(`${getProd(item.productId)?.name}: yeterli koli stoku yok`,"error");ok=false;}
-    }
-    if(ok){setFinishedGoods(prev=>prev.map(fg=>{const d=deductions.find(x=>x.fgId===fg.id);return d?{...fg,stock:fg.stock-d.qty}:fg;}));showToast("Koliler stoktan düşüldü!");}
+    const order=orders.find(o=>o.id===orderId);
+    if(!order)return;
+    if(order.stockDeducted){showToast("Bu siparişin stoğu zaten düşülmüş","error");return;}
+    const result=computeDeductions(order);
+    if(!result.ok){showToast(result.errorMsg,"error");return;}
+    applyDeductions(result.deductions);
+    setOrders(prev=>prev.map(o=>o.id===orderId?{...o,stockDeducted:true}:o));
+    showToast("Koliler stoktan düşüldü!");
   };
 
-  const savePay=(p)=>{if(p.id)setPayments(pr=>pr.map(x=>x.id===p.id?p:x));else setPayments(pr=>[...pr,{...p,id:"od"+gid()}]);closeM();showToast("Ödeme kaydedildi");};
+  const savePay=(p)=>{const np={...p,amount:Number(p.amount)||0,kdvRate:Number(p.kdvRate)||20};if(np.id)setPayments(pr=>pr.map(x=>x.id===np.id?np:x));else setPayments(pr=>[...pr,{...np,id:"od"+gid()}]);closeM();showToast("Ödeme kaydedildi");};
   const delPay=(id)=>{setPayments(p=>p.filter(x=>x.id!==id));showToast("Ödeme silindi");};
 
-  const saveMat=(m)=>{if(m.id)setMaterials(p=>p.map(x=>x.id===m.id?m:x));else setMaterials(p=>[...p,{...m,id:"m"+gid()}]);closeM();showToast("Malzeme kaydedildi");};
+  const saveMat=(m)=>{const nm={...m,stock:Number(m.stock)||0};if(nm.id)setMaterials(p=>p.map(x=>x.id===nm.id?nm:x));else setMaterials(p=>[...p,{...nm,id:"m"+gid()}]);closeM();showToast("Malzeme kaydedildi");};
   const addStock=(mid,qty)=>{setMaterials(p=>p.map(m=>m.id===mid?{...m,stock:m.stock+qty}:m));showToast("Stok eklendi");};
 
   const produce=(rid,qty,note)=>{
@@ -437,7 +478,7 @@ function OrderP({orders,getCust,getProd,orderSub,orderKDV,openM,deductFG,delOrde
             {o.faturali&&sub!==tot&&<div style={{fontSize:11,color:T.textDim}}>Ara toplam: {fmt(sub)}</div>}
             <div style={{fontSize:19,fontWeight:700,color:T.accent}}>{fmt(tot)}</div>
             <div style={{display:"flex",gap:5}}>
-              <Btn small variant="ghost" onClick={()=>deductFG(o.id)}>Stoktan Düş</Btn>
+              <Btn small variant="ghost" disabled={o.stockDeducted} onClick={()=>deductFG(o.id)}>{o.stockDeducted?"Stok Düşüldü ✓":"Stoktan Düş"}</Btn>
               <IB onClick={()=>openM("order",o)}>{IC.edit}</IB>
               <IB onClick={()=>{if(confirm("Siparişi silmek istediğinize emin misiniz?"))delOrder(o.id)}} danger>{IC.trash}</IB>
             </div>
@@ -628,11 +669,11 @@ function CustForm({data,onSave,onClose}){
 function OrderForm({data,customers,getCustPrice,onSave,onClose}){
   const [f,sF]=useState(data||{customerId:customers[0]?.id||"",date:new Date().toISOString().slice(0,10),status:"beklemede",items:[{productId:DEF_PRODUCTS[0]?.id||"",qty:1,unitPrice:0}],paymentType:"pesin",dueDate:"",note:"",faturali:false,kdvRate:20});
   const set=(k,v)=>sF({...f,[k]:v});
-  const setI=(idx,k,v)=>{const items=[...f.items];items[idx]={...items[idx],[k]:k==="qty"||k==="unitPrice"?Number(v):v};if(k==="productId")items[idx].unitPrice=getCustPrice(f.customerId,v);set("items",items);};
+  const setI=(idx,k,v)=>{const items=[...f.items];items[idx]={...items[idx],[k]:(k==="qty"||k==="unitPrice")?(v===""?"":Number(v)):v};if(k==="productId")items[idx].unitPrice=getCustPrice(f.customerId,v);set("items",items);};
   const handleCust=cid=>{const items=f.items.map(item=>({...item,unitPrice:getCustPrice(cid,item.productId)}));sF({...f,customerId:cid,items});};
-  const sub=f.items.reduce((s,i)=>s+i.qty*i.unitPrice,0);
-  const kdv=f.faturali?sub*((f.kdvRate||20)/100):0;
-  const valid=f.customerId&&f.items.length>0&&f.items.every(i=>i.qty>0);
+  const sub=f.items.reduce((s,i)=>s+(Number(i.qty)||0)*(Number(i.unitPrice)||0),0);
+  const kdv=f.faturali?sub*((Number(f.kdvRate)||20)/100):0;
+  const valid=f.customerId&&f.items.length>0&&f.items.every(i=>Number(i.qty)>0);
 
   if(customers.length===0) return <div><div style={{display:"flex",justifyContent:"space-between",marginBottom:18}}><h2 style={{fontFamily:"'Playfair Display',serif",fontSize:19,fontWeight:700}}>Yeni Sipariş</h2><button onClick={onClose} style={{background:"transparent",border:"none",cursor:"pointer",color:T.textMuted}}>{IC.close}</button></div><div style={{padding:"30px",textAlign:"center",color:T.textMuted}}><div style={{fontSize:32,marginBottom:10}}>👥</div><p>Sipariş oluşturmak için önce müşteri eklemelisiniz.</p></div></div>;
 
@@ -645,7 +686,7 @@ function OrderForm({data,customers,getCustPrice,onSave,onClose}){
       <FF label="Ödeme Tipi"><select value={f.paymentType} onChange={e=>set("paymentType",e.target.value)} style={{width:"100%"}}><option value="pesin">Peşin</option><option value="vadeli">Vadeli</option></select></FF>
       {f.paymentType==="vadeli"&&<FF label="Vade Tarihi"><input type="date" value={f.dueDate||""} onChange={e=>set("dueDate",e.target.value)} style={{width:"100%"}}/></FF>}
       <FF label="Fatura"><select value={f.faturali?"evet":"hayir"} onChange={e=>set("faturali",e.target.value==="evet")} style={{width:"100%"}}><option value="hayir">Faturasız</option><option value="evet">Faturalı</option></select></FF>
-      {f.faturali&&<FF label="KDV %"><input type="number" value={f.kdvRate||20} onChange={e=>set("kdvRate",Number(e.target.value))} style={{width:"100%"}}/></FF>}
+      {f.faturali&&<FF label="KDV %"><input type="number" value={f.kdvRate??""} onChange={e=>set("kdvRate",e.target.value===""?"":Number(e.target.value))} style={{width:"100%"}}/></FF>}
     </div>
     <div style={{marginBottom:12}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:7}}><span style={{fontSize:11,fontWeight:600,color:T.textMuted,textTransform:"uppercase",letterSpacing:"1px"}}>Ürünler</span><button onClick={()=>set("items",[...f.items,{productId:DEF_PRODUCTS[0]?.id||"",qty:1,unitPrice:0}])} style={{background:"transparent",border:`1px solid ${T.border}`,borderRadius:6,padding:"3px 9px",color:T.accent,cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif"}}>+ Ekle</button></div>
@@ -653,7 +694,7 @@ function OrderForm({data,customers,getCustPrice,onSave,onClose}){
         <div style={{flex:2}}>{idx===0&&<label style={{fontSize:10,color:T.textDim,display:"block",marginBottom:2}}>Ürün</label>}<select value={item.productId} onChange={e=>setI(idx,"productId",e.target.value)} style={{width:"100%"}}>{DEF_PRODUCTS.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
         <div style={{flex:1}}>{idx===0&&<label style={{fontSize:10,color:T.textDim,display:"block",marginBottom:2}}>Adet</label>}<input type="number" min={1} value={item.qty} onChange={e=>setI(idx,"qty",e.target.value)} style={{width:"100%"}}/></div>
         <div style={{flex:1}}>{idx===0&&<label style={{fontSize:10,color:T.textDim,display:"block",marginBottom:2}}>Fiyat</label>}<input type="number" value={item.unitPrice} onChange={e=>setI(idx,"unitPrice",e.target.value)} style={{width:"100%"}}/></div>
-        <div style={{flex:1,textAlign:"right"}}>{idx===0&&<label style={{fontSize:10,color:T.textDim,display:"block",marginBottom:2}}>Tutar</label>}<div style={{padding:"9px 0",fontSize:12,fontWeight:600,color:T.accent}}>{fmt(item.qty*item.unitPrice)}</div></div>
+        <div style={{flex:1,textAlign:"right"}}>{idx===0&&<label style={{fontSize:10,color:T.textDim,display:"block",marginBottom:2}}>Tutar</label>}<div style={{padding:"9px 0",fontSize:12,fontWeight:600,color:T.accent}}>{fmt((Number(item.qty)||0)*(Number(item.unitPrice)||0))}</div></div>
         {f.items.length>1&&<button onClick={()=>set("items",f.items.filter((_,i)=>i!==idx))} style={{background:"transparent",border:"none",cursor:"pointer",color:T.danger,padding:"9px 2px"}}>{IC.trash}</button>}
       </div>)}
       <div style={{textAlign:"right",marginTop:8,borderTop:`1px solid ${T.border}`,paddingTop:8}}>
@@ -670,8 +711,8 @@ function OrderForm({data,customers,getCustPrice,onSave,onClose}){
 function PayForm({data,customers,onSave,onClose}){
   const [f,sF]=useState(data||{type:"tahsilat",customerId:"",date:new Date().toISOString().slice(0,10),amount:0,method:"pesin",desc:"",dueDate:"",faturali:false,kdvRate:20});
   const set=(k,v)=>sF({...f,[k]:v});
-  const kdv=f.faturali?f.amount*((f.kdvRate||20)/100):0;
-  const valid=f.amount>0;
+  const kdv=f.faturali?(Number(f.amount)||0)*((Number(f.kdvRate)||20)/100):0;
+  const valid=Number(f.amount)>0;
   return <div>
     <div style={{display:"flex",justifyContent:"space-between",marginBottom:18}}><h2 style={{fontFamily:"'Playfair Display',serif",fontSize:19,fontWeight:700}}>{data?"Ödeme Düzenle":"Yeni Ödeme"}</h2><button onClick={onClose} style={{background:"transparent",border:"none",cursor:"pointer",color:T.textMuted}}>{IC.close}</button></div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:14}}>
@@ -679,13 +720,13 @@ function PayForm({data,customers,onSave,onClose}){
       <FF label="Ödeme Şekli"><select value={f.method} onChange={e=>set("method",e.target.value)} style={{width:"100%"}}><option value="pesin">Peşin</option><option value="vadeli">Vadeli</option></select></FF>
       {f.type==="tahsilat"&&<FF label="Müşteri" span={2}><select value={f.customerId||""} onChange={e=>set("customerId",e.target.value)} style={{width:"100%"}}><option value="">-- Seçiniz --</option>{customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></FF>}
       <FF label="Tarih"><input type="date" value={f.date} onChange={e=>set("date",e.target.value)} style={{width:"100%"}}/></FF>
-      <FF label="Tutar (₺) *"><input type="number" value={f.amount} onChange={e=>set("amount",Number(e.target.value))} style={{width:"100%"}}/></FF>
+      <FF label="Tutar (₺) *"><input type="number" value={f.amount??""} onChange={e=>set("amount",e.target.value===""?"":Number(e.target.value))} style={{width:"100%"}}/></FF>
       <FF label="Fatura"><select value={f.faturali?"evet":"hayir"} onChange={e=>set("faturali",e.target.value==="evet")} style={{width:"100%"}}><option value="hayir">Faturasız</option><option value="evet">Faturalı</option></select></FF>
-      {f.faturali&&<FF label="KDV %"><input type="number" value={f.kdvRate||20} onChange={e=>set("kdvRate",Number(e.target.value))} style={{width:"100%"}}/></FF>}
+      {f.faturali&&<FF label="KDV %"><input type="number" value={f.kdvRate??""} onChange={e=>set("kdvRate",e.target.value===""?"":Number(e.target.value))} style={{width:"100%"}}/></FF>}
       {f.method==="vadeli"&&<FF label="Vade Tarihi" span={2}><input type="date" value={f.dueDate||""} onChange={e=>set("dueDate",e.target.value)} style={{width:"100%"}}/></FF>}
       <FF label="Açıklama" span={2}><textarea value={f.desc||""} onChange={e=>set("desc",e.target.value)} rows={2} style={{width:"100%",resize:"vertical"}}/></FF>
     </div>
-    {f.faturali&&<div style={{padding:"9px 12px",borderRadius:7,background:`${T.purple}10`,border:`1px solid ${T.purple}30`,marginBottom:12,fontSize:12,color:T.purple}}>KDV: {fmt(kdv)} · Toplam: {fmt(f.amount+kdv)}</div>}
+    {f.faturali&&<div style={{padding:"9px 12px",borderRadius:7,background:`${T.purple}10`,border:`1px solid ${T.purple}30`,marginBottom:12,fontSize:12,color:T.purple}}>KDV: {fmt(kdv)} · Toplam: {fmt((Number(f.amount)||0)+kdv)}</div>}
     <div style={{display:"flex",gap:7,justifyContent:"flex-end"}}><Btn variant="ghost" onClick={onClose}>İptal</Btn><Btn disabled={!valid} onClick={()=>onSave(f)}>Kaydet</Btn></div>
   </div>;
 }
@@ -700,20 +741,21 @@ function MatForm({data,onSave,onClose}){
       <FF label="Malzeme Adı *"><input value={f.name} onChange={e=>set("name",e.target.value)} placeholder="Malzeme adını girin" style={{width:"100%"}}/></FF>
       <FF label="Kategori"><select value={f.category} onChange={e=>set("category",e.target.value)} style={{width:"100%"}}><option value="hammadde">Hammadde</option><option value="ambalaj">Ambalaj</option><option value="koli">Koli</option></select></FF>
       <FF label="Birim"><input value={f.unit} onChange={e=>set("unit",e.target.value)} style={{width:"100%"}}/></FF>
-      <FF label="Başlangıç Stok"><input type="number" value={f.stock} onChange={e=>set("stock",Number(e.target.value))} style={{width:"100%"}}/></FF>
+      <FF label="Başlangıç Stok"><input type="number" value={f.stock??""} onChange={e=>set("stock",e.target.value===""?"":Number(e.target.value))} style={{width:"100%"}}/></FF>
     </div>
     <div style={{display:"flex",gap:7,justifyContent:"flex-end"}}><Btn variant="ghost" onClick={onClose}>İptal</Btn><Btn disabled={!valid} onClick={()=>onSave(f)}>Kaydet</Btn></div>
   </div>;
 }
 
 function AddStockF({mat,onAdd,onClose}){
-  const [qty,setQty]=useState(0);
+  const [qty,setQty]=useState("");
+  const n=Number(qty)||0;
   return <div>
     <div style={{display:"flex",justifyContent:"space-between",marginBottom:18}}><h2 style={{fontFamily:"'Playfair Display',serif",fontSize:19,fontWeight:700}}>Stok Ekle</h2><button onClick={onClose} style={{background:"transparent",border:"none",cursor:"pointer",color:T.textMuted}}>{IC.close}</button></div>
     <div style={{padding:"12px 14px",borderRadius:9,background:T.card,border:`1px solid ${T.border}`,marginBottom:14}}><div style={{fontSize:14,fontWeight:600}}>{mat.name}</div><div style={{fontSize:12,color:T.textMuted,marginTop:2}}>Mevcut: <span style={{fontWeight:700,color:T.success}}>{fmtN(mat.stock)}</span> adet</div></div>
-    <FF label="Eklenecek Miktar"><input type="number" min={1} value={qty} onChange={e=>setQty(Number(e.target.value))} style={{width:"100%"}} autoFocus/></FF>
-    {qty>0&&<div style={{marginTop:8,fontSize:13,color:T.textMuted}}>Yeni stok: <span style={{fontWeight:700,color:T.success}}>{fmtN(mat.stock+qty)}</span> adet</div>}
-    <div style={{display:"flex",gap:7,justifyContent:"flex-end",marginTop:14}}><Btn variant="ghost" onClick={onClose}>İptal</Btn><Btn disabled={qty<=0} onClick={()=>{onAdd(mat.id,qty);onClose();}}>Stok Ekle</Btn></div>
+    <FF label="Eklenecek Miktar"><input type="number" min={1} value={qty} onChange={e=>setQty(e.target.value===""?"":Number(e.target.value))} style={{width:"100%"}} autoFocus/></FF>
+    {n>0&&<div style={{marginTop:8,fontSize:13,color:T.textMuted}}>Yeni stok: <span style={{fontWeight:700,color:T.success}}>{fmtN(mat.stock+n)}</span> adet</div>}
+    <div style={{display:"flex",gap:7,justifyContent:"flex-end",marginTop:14}}><Btn variant="ghost" onClick={onClose}>İptal</Btn><Btn disabled={n<=0} onClick={()=>{onAdd(mat.id,n);onClose();}}>Stok Ekle</Btn></div>
   </div>;
 }
 
@@ -721,9 +763,10 @@ function ProduceF({materials,getMat,onProduce,onClose}){
   const [rid,setRid]=useState(RECIPES[0].id);
   const [qty,setQty]=useState(1);
   const [note,setNote]=useState("");
+  const q=Number(qty)||0;
   const r=RECIPES.find(x=>x.id===rid);
-  const checks=r?r.materials.map(rm=>{const mat=getMat(rm.materialId);const need=rm.qtyPerUnit*qty;const avail=mat?.stock||0;return{...rm,need,avail,ok:avail>=need};}):[];
-  const canP=checks.every(c=>c.ok)&&qty>0;
+  const checks=r?r.materials.map(rm=>{const mat=getMat(rm.materialId);const need=rm.qtyPerUnit*q;const avail=mat?.stock||0;return{...rm,need,avail,ok:avail>=need};}):[];
+  const canP=checks.every(c=>c.ok)&&q>0;
   const maxP=r?Math.min(...r.materials.map(rm=>{const mat=getMat(rm.materialId);return mat?Math.floor(mat.stock/rm.qtyPerUnit):0;})):0;
 
   return <div>
@@ -731,7 +774,7 @@ function ProduceF({materials,getMat,onProduce,onClose}){
     <div style={{display:"flex",flexDirection:"column",gap:9,marginBottom:14}}>
       <FF label="Üretim Reçetesi"><select value={rid} onChange={e=>setRid(e.target.value)} style={{width:"100%"}}>{RECIPES.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></FF>
       {r&&<div style={{fontSize:12,color:T.textMuted,padding:"5px 11px",borderRadius:7,background:T.card}}>{r.desc} · Maks: <span style={{fontWeight:700,color:maxP>0?T.success:T.danger}}>{maxP} koli</span></div>}
-      <FF label="Üretim Miktarı (Koli)"><input type="number" min={1} value={qty} onChange={e=>setQty(Math.max(1,Number(e.target.value)))} style={{width:"100%"}}/></FF>
+      <FF label="Üretim Miktarı (Koli)"><input type="number" min={1} value={qty} onChange={e=>setQty(e.target.value===""?"":Number(e.target.value))} style={{width:"100%"}}/></FF>
     </div>
     <div style={{marginBottom:14}}>
       <div style={{fontSize:11,fontWeight:600,color:T.textMuted,marginBottom:7,textTransform:"uppercase",letterSpacing:"1px"}}>Malzeme Tüketimi</div>
@@ -742,6 +785,6 @@ function ProduceF({materials,getMat,onProduce,onClose}){
     </div>
     <FF label="Not"><input value={note} onChange={e=>setNote(e.target.value)} placeholder="Üretim notu..." style={{width:"100%"}}/></FF>
     {!canP&&qty>0&&<div style={{marginTop:8,padding:"8px 12px",borderRadius:7,background:`${T.danger}10`,border:`1px solid ${T.danger}30`,fontSize:12,color:T.danger}}>Yetersiz malzeme! Maks {maxP} koli üretilebilir.</div>}
-    <div style={{display:"flex",gap:7,justifyContent:"flex-end",marginTop:14}}><Btn variant="ghost" onClick={onClose}>İptal</Btn><Btn disabled={!canP} onClick={()=>onProduce(rid,qty,note)}>Üret</Btn></div>
+    <div style={{display:"flex",gap:7,justifyContent:"flex-end",marginTop:14}}><Btn variant="ghost" onClick={onClose}>İptal</Btn><Btn disabled={!canP} onClick={()=>onProduce(rid,q,note)}>Üret</Btn></div>
   </div>;
 }
